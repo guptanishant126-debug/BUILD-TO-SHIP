@@ -35,6 +35,12 @@ const axiosInstance = axios.create({
 // Request Interceptor: inject Bearer token or fast-track client fallback if static host
 axiosInstance.interceptors.request.use(
   async (config) => {
+    const token = localStorage.getItem('aegis_token');
+    if (token) {
+      config.headers = config.headers || {};
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+
     // If we already know the current deployment is a static host without an active API backend,
     // and no remote HTTPS backend URL was set in VITE_API_BASE_URL:
     const envUrl = import.meta.env.VITE_API_BASE_URL;
@@ -44,15 +50,17 @@ axiosInstance.interceptors.request.use(
       // Create a custom adapter to serve response directly without network 405 error
       config.adapter = async (cfg) => {
         const fallbackRes = await handleClientFallback(cfg);
-        return fallbackRes;
+        return {
+          status: fallbackRes.status || 200,
+          statusText: 'OK',
+          headers: fallbackRes.headers || {},
+          config: cfg,
+          data: fallbackRes.data
+        };
       };
       return config;
     }
 
-    const token = localStorage.getItem('aegis_token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
     return config;
   },
   (error) => Promise.reject(error)
@@ -91,7 +99,13 @@ axiosInstance.interceptors.response.use(
       hasBackendFailed = true;
       try {
         const fallbackRes = await handleClientFallback(error.config);
-        return fallbackRes;
+        return {
+          status: fallbackRes.status || 200,
+          statusText: 'OK',
+          headers: fallbackRes.headers || {},
+          config: error.config,
+          data: fallbackRes.data
+        };
       } catch (fallbackErr) {
         console.error('Fallback handling failed:', fallbackErr);
       }
