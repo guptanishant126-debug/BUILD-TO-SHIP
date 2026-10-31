@@ -1,18 +1,24 @@
 import axios from 'axios';
 import { handleClientFallback } from './clientFallback';
 
+let hasBackendFailed = false;
+
+const isRemoteStaticHost = () => {
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname;
+  return host.includes('vercel.app') || host.includes('netlify.app') || (!host.includes('localhost') && !host.includes('127.0.0.1'));
+};
+
 const getBaseUrl = () => {
   const envUrl = import.meta.env.VITE_API_BASE_URL;
 
-  // When deployed in the browser (e.g. on Vercel, Netlify, or any production domain)
-  if (typeof window !== 'undefined') {
-    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-    if (!isLocalhost) {
-      // Never attempt to call localhost:5000 from an HTTPS production domain
-      if (!envUrl || envUrl.includes('localhost') || envUrl.includes('127.0.0.1')) {
-        return '/api';
-      }
+  if (isRemoteStaticHost()) {
+    // If user provided a real external HTTPS backend (e.g. on Render or Railway)
+    if (envUrl && envUrl.startsWith('https://') && !envUrl.includes('localhost')) {
+      return envUrl;
     }
+    // Otherwise use relative /api
+    return '/api';
   }
 
   return envUrl || 'http://localhost:5000/api';
@@ -20,19 +26,29 @@ const getBaseUrl = () => {
 
 const axiosInstance = axios.create({
   baseURL: getBaseUrl(),
-  timeout: 10000,
+  timeout: 8000,
   headers: {
     'Content-Type': 'application/json'
   }
 });
 
-// Request Interceptor: inject Bearer token
+// Request Interceptor: inject Bearer token or fast-track client fallback if static host
 axiosInstance.interceptors.request.use(
-  (config) => {
-    // Dynamically update baseURL in case domain changes
-    if (!config.baseURL || (typeof window !== 'undefined' && !window.location.hostname.includes('localhost') && config.baseURL.includes('localhost'))) {
-      config.baseURL = getBaseUrl();
+  async (config) => {
+    // If we already know the current deployment is a static host without an active API backend,
+    // and no remote HTTPS backend URL was set in VITE_API_BASE_URL:
+    const envUrl = import.meta.env.VITE_API_BASE_URL;
+    const hasExternalApi = envUrl && envUrl.startsWith('https://') && !envUrl.includes('localhost');
+
+    if ((hasBackendFailed || isRemoteStaticHost()) && !hasExternalApi) {
+      // Create a custom adapter to serve response directly without network 405 error
+      config.adapter = async (cfg) => {
+        const fallbackRes = await handleClientFallback(cfg);
+        return fallbackRes;
+      };
+      return config;
     }
+
     const token = localStorage.getItem('aegis_token');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
@@ -42,31 +58,42 @@ axiosInstance.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response Interceptor: handle Network Error with Resilient Fallback Engine
+// Response Interceptor: handle 405, 404, Network Error with Resilient Fallback Engine
 axiosInstance.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // If static host returned HTML instead of JSON for an API route
+    if (typeof response.data === 'string' && response.data.includes('<!DOCTYPE html>')) {
+      hasBackendFailed = true;
+      return handleClientFallback(response.config);
+    }
+    return response;
+  },
   async (error) => {
-    // Check if network failed, server is offline, or endpoint returned 404 on Vercel
-    const isNetworkError =
+    const status = error.response ? error.response.status : null;
+    const responseData = error.response ? error.response.data : null;
+
+    // Detect if static host rejected API route (405 Method Not Allowed, 404, or Network Error)
+    const isStaticHostRejection =
+      status === 405 ||
+      status === 404 ||
+      status === 500 ||
+      status === 502 ||
+      status === 503 ||
+      status === 504 ||
       !error.response ||
       error.message === 'Network Error' ||
       error.code === 'ERR_NETWORK' ||
       error.code === 'ECONNREFUSED' ||
-      (error.response && error.response.status === 404);
+      (typeof responseData === 'string' && responseData.includes('<!DOCTYPE html>'));
 
-    if (isNetworkError && error.config) {
-      console.warn(`[AegisVoice Sentinel] Backend offline or unreachable at ${error.config.url}. Engaging client-side resilient fallback.`);
+    if (isStaticHostRejection && error.config) {
+      console.warn(`[AegisVoice Sentinel] Endpoint ${error.config.url} returned status ${status || 'Network Error'}. Engaging client-side resilient fallback.`);
+      hasBackendFailed = true;
       try {
         const fallbackRes = await handleClientFallback(error.config);
         return fallbackRes;
       } catch (fallbackErr) {
         console.error('Fallback handling failed:', fallbackErr);
-      }
-    }
-
-    if (error.response && error.response.status === 401) {
-      if (typeof window !== 'undefined' && !window.location.pathname.includes('/login') && !window.location.pathname.includes('/register')) {
-        console.warn('Session expired or unauthorized.');
       }
     }
 
