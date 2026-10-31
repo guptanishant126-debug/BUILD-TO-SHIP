@@ -133,3 +133,4 @@ The platform includes 4 fully playable multi-chunk scenarios for immediate demon
   - Connects to PostgreSQL (Supabase, Neon, Railway) via `pg.Pool` running production DDL from `schema.sql`.
   - Built-in in-browser and server-side fallback storage adapters guarantee zero downtime even on static CDN hosting.
 - **Banking Fraud Webhook Security**: Dispatches payloads with signed `HMAC-SHA256` headers (`t=<timestamp>,v1=<signature>`).
+
