@@ -86,7 +86,7 @@ app.use((err, req, res, next) => {
 });
 
 // Server Initialization
-const startServer = async () => {
+export const startServer = async () => {
   try {
     await initDb();
     app.listen(PORT, () => {
@@ -102,5 +102,10 @@ const startServer = async () => {
   }
 };
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
+
 
